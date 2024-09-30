@@ -1,19 +1,21 @@
 package xbstream
 
 import (
-	"github.com/pkg/errors"
-	"github.com/wal-g/tracelog"
-	"github.com/wal-g/wal-g/internal/compression"
-	"github.com/wal-g/wal-g/internal/databases/mysql/innodb"
-	"github.com/wal-g/wal-g/internal/ioextensions"
-	"github.com/wal-g/wal-g/internal/splitmerge"
-	"github.com/wal-g/wal-g/utility"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/pkg/errors"
+	"github.com/wal-g/tracelog"
+
+	"github.com/wal-g/wal-g/internal/compression"
+	"github.com/wal-g/wal-g/internal/databases/mysql/innodb"
+	"github.com/wal-g/wal-g/internal/ioextensions"
+	"github.com/wal-g/wal-g/internal/splitmerge"
+	"github.com/wal-g/wal-g/utility"
 )
 
 type dataSink interface {
@@ -151,8 +153,9 @@ func (sink *decompressFileSink) repairSparse() error {
 }
 
 type dataSinkFactory struct {
-	output     string
-	decompress bool
+	output           string
+	decompress       bool
+	spaceIDCollector innodb.SpaceIDCollector
 }
 
 func (dsf *dataSinkFactory) MapDataSinkPath(path string) string {
@@ -200,7 +203,7 @@ func DiskSink(stream *Reader, output string, decompress bool) {
 	err := os.MkdirAll(output, 0777) // FIXME: permission & UMASK
 	tracelog.ErrorLogger.FatalOnError(err)
 
-	factory := dataSinkFactory{output, decompress}
+	factory := dataSinkFactory{output, decompress, innodb.NewSpaceIDCollector(output)}
 
 	sinks := make(map[string]dataSink)
 	for {
