@@ -1,16 +1,19 @@
 package xb
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 	"github.com/wal-g/tracelog"
+
 	"github.com/wal-g/wal-g/internal/databases/mysql/xbstream"
-	"os"
 )
 
 const (
 	extractXBStreamShortDescription = "Extract xbstream to folder"
 	decompressFlag                  = "decompress"
 	decompressShorthand             = "d"
+	inplaceFlag                     = "inplace"
 )
 
 var (
@@ -35,15 +38,18 @@ var (
 			tracelog.ErrorLogger.FatalfOnError("Cannot create destination folder: %v", err)
 
 			streamReader := xbstream.NewReader(src, false)
-			xbstream.DiskSink(streamReader, dst, decompress)
+			xbstream.DiskSink(streamReader, dst, decompress, inplace)
 		},
 	}
 	decompress bool
+	inplace    bool
 )
 
 func init() {
 	extractXBStreamCmd.Flags().BoolVarP(&decompress, decompressFlag, decompressShorthand,
 		false, "Decompress files")
+	extractXBStreamCmd.Flags().BoolVar(&inplace, inplaceFlag,
+		false, "Apply diff files inplace")
 
 	XBToolsCmd.AddCommand(extractXBStreamCmd)
 }

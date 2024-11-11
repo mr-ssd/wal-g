@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"bytes"
-	"github.com/wal-g/wal-g/internal/databases/mysql/xbstream"
 	"io"
 	"os"
 	"os/exec"
@@ -10,8 +9,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/wal-g/wal-g/internal/databases/mysql/xbstream"
+
 	"github.com/spf13/viper"
 	"github.com/wal-g/tracelog"
+
 	"github.com/wal-g/wal-g/internal"
 	conf "github.com/wal-g/wal-g/internal/config"
 	"github.com/wal-g/wal-g/pkg/storages/storage"
@@ -110,9 +112,9 @@ func enrichBackupArgs(backupCmd *exec.Cmd, xtrabackupExtraDirectory string, isFu
 	}
 }
 
-func GetXtrabackupFetcher(restoreCmd, prepareCmd *exec.Cmd, useXbtoolExtract bool) func(folder storage.Folder, backup internal.Backup) {
+func GetXtrabackupFetcher(restoreCmd, prepareCmd *exec.Cmd, useXbtoolExtract bool, inplace bool) func(folder storage.Folder, backup internal.Backup) {
 	return func(folder storage.Folder, backup internal.Backup) {
-		err := xtrabackupFetch(backup.Name, folder, restoreCmd, prepareCmd, useXbtoolExtract, true)
+		err := xtrabackupFetch(backup.Name, folder, restoreCmd, prepareCmd, useXbtoolExtract, inplace, true)
 		tracelog.ErrorLogger.FatalfOnError("Failed to fetch backup: %v", err)
 	}
 }
@@ -123,6 +125,7 @@ func xtrabackupFetch(
 	restoreCmd *exec.Cmd,
 	prepareCmd *exec.Cmd,
 	useXbtoolExtract bool,
+	inplace bool,
 	isLast bool) error {
 	backup, err := internal.GetBackupByName(backupName, utility.BaseBackupPath, folder)
 	tracelog.ErrorLogger.FatalfOnError("Failed to fetch backup: %v", err)
@@ -139,14 +142,14 @@ func xtrabackupFetch(
 		tracelog.ErrorLogger.FatalfOnError("%v", err)
 
 		tracelog.InfoLogger.Printf("Delta from %v at LSN %x \n", *sentinel.IncrementFrom, *sentinel.IncrementFromLSN)
-		err = xtrabackupFetch(*sentinel.IncrementFrom, folder, restoreCmd, prepareCmd, useXbtoolExtract, false)
+		err = xtrabackupFetch(*sentinel.IncrementFrom, folder, restoreCmd, prepareCmd, useXbtoolExtract, inplace, false)
 		if err != nil {
 			return err
 		}
 	}
 
 	if useXbtoolExtract {
-		return xtrabackupFetchInhouse(backup, prepareCmd, isLast)
+		return xtrabackupFetchInhouse(backup, prepareCmd, inplace, isLast)
 	}
 	return xtrabackupFetchClassic(backup, restoreCmd, prepareCmd, isLast)
 }
@@ -222,7 +225,7 @@ func xtrabackupFetchClassic(backup internal.Backup, restoreCmd *exec.Cmd, prepar
 	return os.RemoveAll(tempDeltaDir)
 }
 
-func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, isLast bool) error {
+func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplace bool, isLast bool) error {
 	// This is equivalent to:
 	//
 	// wal-g xb extract --decompress /var/lib/mysql  < BASE.xbstream
@@ -267,7 +270,7 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, isLast
 	reader, writer := io.Pipe()
 	streamReader := xbstream.NewReader(reader, false)
 	wg.Add(1)
-	go xbstream.AsyncDiskSink(&wg, streamReader, destinationDir, true)
+	go xbstream.AsyncDiskSink(&wg, streamReader, destinationDir, true, inplace)
 
 	err = fetcher(backup, writer)
 	if err != nil {
