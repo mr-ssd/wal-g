@@ -68,66 +68,7 @@ func (sink *simpleFileSink) Process(chunk *Chunk) error {
 	return nil
 }
 
-type decompressFileSink struct {
-	file          *os.File
-	writeHere     chan []byte
-	fileCloseChan chan struct{}
-	xbOffset      uint64
-}
-
-var _ dataSink = &decompressFileSink{}
-
-func newDecompressFileSink(file *os.File, decompressor compression.Decompressor) dataSink {
-	// xbstream is a simple archive format. Compression / encryption / delta-files are xtrabackup features.
-	// so, all chunks of one compressed file is a _single_ stream
-	// we should combine data from all file chunks in a single io.Reader before passing to Decompressor:
-	sink := decompressFileSink{
-		file:          file,
-		writeHere:     make(chan []byte),
-		fileCloseChan: make(chan struct{}),
-	}
-	reader := splitmerge.NewChannelReader(sink.writeHere)
-	readHere, err := decompressor.Decompress(reader)
-	tracelog.ErrorLogger.FatalfOnError("Cannot decompress: %v", err)
-
-	go func() {
-		_, err := io.Copy(file, readHere)
-		tracelog.ErrorLogger.FatalfOnError("Cannot copy data: %v", err)
-		err = sink.repairSparse()
-		if err != nil {
-			tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
-		}
-		utility.LoggedClose(file, "datasink.Close()")
-		close(sink.fileCloseChan)
-	}()
-
-	return &sink
-}
-
-func (sink *decompressFileSink) Process(chunk *Chunk) error {
-	if chunk.Type == ChunkTypeEOF {
-		close(sink.writeHere)
-		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
-		return SinkEOF
-	}
-
-	if len(chunk.SparseMap) != 0 {
-		tracelog.ErrorLogger.Fatalf("Found compressed file %v with sparse map", chunk.Path)
-	}
-	if sink.xbOffset != chunk.Offset {
-		tracelog.ErrorLogger.Fatalf("Offset mismatch for file %v: expected=%v, actual=%v", chunk.Path, sink.xbOffset, chunk.Offset)
-	}
-	sink.xbOffset += chunk.PayloadLen
-
-	// synchronously read data & send it to writer
-	buffer := make([]byte, chunk.PayloadLen)
-	_, err := io.ReadFull(chunk, buffer)
-	tracelog.ErrorLogger.FatalfOnError("ReadFull %v", err)
-	sink.writeHere <- buffer
-	return nil
-}
-
-func (sink *decompressFileSink) repairSparse() error {
+func (sink *simpleFileSink) repairSparse() error {
 	if !strings.HasSuffix(sink.file.Name(), "ibd") {
 		return nil
 	}
@@ -162,18 +103,100 @@ func (sink *decompressFileSink) repairSparse() error {
 	}
 }
 
+type decompressFileSink struct {
+	simpleFileSink
+	writeHere     chan []byte
+	fileCloseChan chan struct{}
+	xbOffset      uint64
+}
+
+var _ dataSink = &decompressFileSink{}
+
+func newDecompressFileSink(file *os.File, decompressor compression.Decompressor) dataSink {
+	// xbstream is a simple archive format. Compression / encryption / delta-files are xtrabackup features.
+	// so, all chunks of one compressed file is a _single_ stream
+	// we should combine data from all file chunks in a single io.Reader before passing to Decompressor:
+	sink := decompressFileSink{
+		simpleFileSink: simpleFileSink{file},
+		writeHere:      make(chan []byte),
+		fileCloseChan:  make(chan struct{}),
+	}
+	reader := splitmerge.NewChannelReader(sink.writeHere)
+	readHere, err := decompressor.Decompress(reader)
+	tracelog.ErrorLogger.FatalfOnError("Cannot decompress: %v", err)
+
+	go func() {
+		_, err := io.Copy(file, readHere)
+		tracelog.ErrorLogger.FatalfOnError("Cannot copy data: %v", err)
+		err = sink.repairSparse()
+		if err != nil {
+			tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
+		}
+		utility.LoggedClose(file, "datasink.Close()")
+		close(sink.fileCloseChan)
+	}()
+
+	return &sink
+}
+
+func (sink *decompressFileSink) Process(chunk *Chunk) error {
+	if chunk.Type == ChunkTypeEOF {
+		// FIXME: check close procedure
+		close(sink.writeHere)
+		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
+		return SinkEOF
+	}
+
+	if len(chunk.SparseMap) != 0 {
+		tracelog.ErrorLogger.Fatalf("Found compressed file %v with sparse map", chunk.Path)
+	}
+	if sink.xbOffset != chunk.Offset {
+		tracelog.ErrorLogger.Fatalf("Offset mismatch for file %v: expected=%v, actual=%v", chunk.Path, sink.xbOffset, chunk.Offset)
+	}
+	sink.xbOffset += chunk.PayloadLen
+
+	// synchronously read data & send it to writer
+	buffer := make([]byte, chunk.PayloadLen)
+	_, err := io.ReadFull(chunk, buffer)
+	tracelog.ErrorLogger.FatalfOnError("ReadFull %v", err)
+	sink.writeHere <- buffer
+	return nil
+}
+
 type diffFileSink struct {
 	simpleFileSink
-	meta *diffMetadata
+	meta          *diffMetadata
+	readHere      io.ReadCloser
+	writeHere     chan []byte
+	fileCloseChan chan struct{}
 }
 
 var _ dataSink = &diffFileSink{}
 
 func newDiffFileSink(file *os.File) dataSink {
-	return &diffFileSink{
+	// xbstream is a simple archive format. Compression / encryption / delta-files are xtrabackup features.
+	// so, all chunks of one compressed file is a _single_ stream
+	// we should combine data from all file chunks in a single io.Reader before passing to Decompressor:
+	sink := diffFileSink{
 		simpleFileSink: simpleFileSink{file},
 		meta:           nil,
+		writeHere:      make(chan []byte),
+		fileCloseChan:  make(chan struct{}),
 	}
+	sink.readHere = splitmerge.NewChannelReader(sink.writeHere)
+
+	go func() {
+		err := sink.applyDiff()
+		tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
+		err = sink.repairSparse()
+		if err != nil {
+			tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
+		}
+		utility.LoggedClose(file, "sink.Close()")
+		close(sink.fileCloseChan)
+	}()
+
+	return &sink
 }
 
 func (sink diffFileSink) Process(chunk *Chunk) error {
@@ -181,8 +204,12 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 		return nil // skip
 	}
 	if chunk.Type == ChunkTypeEOF && strings.HasSuffix(chunk.Path, ".delta") {
+		// FIXME: check close procedure
 		_ = sink.file.Close()
+		close(sink.writeHere)
+		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
 		return SinkEOF
+
 	}
 
 	if strings.HasSuffix(chunk.Path, ".meta") {
@@ -192,46 +219,59 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 		return nil
 	}
 	if strings.HasSuffix(chunk.Path, ".delta") {
-		// apply delta:
-		// Delta file format:
-		// * Header - page_size bytes
-		//   'xtra' (4 bytes) or 'XTRA' for final block
-		//   N * page_no (N * 4 bytes) - list of page_no (up to page_size / 4 OR  0xFFFFFFFF-terminated-list)
-		// * Body
-		//   N * <page content>
-
-		header := make([]byte, sink.meta.PageSize)
-		_, err := chunk.Reader.Read(header) // FIXME: check bytes?
-		if err != nil {
-			return err
-		}
-		if !slices.Equal(header[0:4], []byte("XTRA")) && !slices.Equal(header[0:4], []byte("xtra")) {
-			return errors.New("unexpected header in diff file")
-		}
-		is_last := slices.Equal(header[0:4], []byte("XTRA"))
-
-		page_cnt := uint32(1)
-		for i := uint32(1); i < sink.meta.PageSize/4; i++ {
-			page_no := binary.BigEndian.Uint32(header[i*4 : i*4+4])
-			if page_no == 0xFFFFFFFF {
-				break
-			}
-			page_cnt = page_cnt + 1
-		}
-
-		if page_cnt != sink.meta.PageSize/4 && !is_last {
-			// error
-		}
-
-		_, err = sink.file.Seek(0, io.SeekStart)
-		if err != nil {
-			return err
-		}
-
+		// synchronously read data & send it to writer
+		buffer := make([]byte, chunk.PayloadLen)
+		_, err := io.ReadFull(chunk, buffer)
+		tracelog.ErrorLogger.FatalfOnError("ReadFull %v", err)
+		sink.writeHere <- buffer
 		return nil
 	}
 
 	return sink.simpleFileSink.Process(chunk)
+}
+
+func (sink diffFileSink) applyDiff() error {
+	// apply delta:
+	// Delta file format:
+	// * Header - page_size bytes
+	//   'xtra' (4 bytes) or 'XTRA' for final block
+	//   N * page_no (N * 4 bytes) - list of page_no (up to page_size / 4 OR  0xFFFFFFFF-terminated-list)
+	// * Body
+	//   N * <page content>
+	header := make([]byte, sink.meta.PageSize)
+	_, err := sink.readHere.Read(header) // FIXME: check bytes?
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(header[0:4], []byte("XTRA")) && !slices.Equal(header[0:4], []byte("xtra")) {
+		return errors.New("unexpected header in diff file")
+	}
+	is_last := slices.Equal(header[0:4], []byte("XTRA"))
+
+	page_nums := make([]innodb.PageNumber, 0, sink.meta.PageSize/4)
+	for i := uint32(1); i < sink.meta.PageSize/4; i++ {
+		page_nums[i] = innodb.PageNumber(binary.BigEndian.Uint32(header[i*4 : i*4+4]))
+		if page_nums[i] == 0xFFFFFFFF {
+			break
+		}
+	}
+
+	if uint32(len(page_nums)) != sink.meta.PageSize/4 && !is_last {
+		// error
+	}
+
+	// copy pages:
+	for _, page_num := range page_nums {
+		_, err = sink.file.Seek(int64(page_num)*int64(sink.meta.PageSize), io.SeekStart)
+		if err != nil {
+			return err
+		}
+		_, err = io.CopyN(sink.file, sink.readHere, int64(sink.meta.PageSize))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type dataSinkFactory struct {
