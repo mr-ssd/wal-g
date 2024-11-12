@@ -123,7 +123,7 @@ func (sink *decompressFileSink) Process(chunk *Chunk) error {
 	// synchronously read data & send it to writer
 	buffer := make([]byte, chunk.PayloadLen)
 	_, err := io.ReadFull(chunk, buffer)
-	tracelog.ErrorLogger.FatalfOnError("ReadFull %v", err)
+	tracelog.ErrorLogger.FatalfOnError(fmt.Sprintf("ReadFull on file %v", chunk.Path), err)
 	sink.writeHere <- buffer
 	return nil
 }
@@ -150,21 +150,10 @@ func newDiffFileSink(file *os.File) dataSink {
 	}
 	sink.readHere = splitmerge.NewChannelReader(sink.writeHere)
 
-	go func() {
-		err := sink.applyDiff()
-		tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
-		err = innodb.RepairSparse(file)
-		if err != nil {
-			tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
-		}
-		utility.LoggedClose(file, "sink.Close()")
-		close(sink.fileCloseChan)
-	}()
-
 	return &sink
 }
 
-func (sink diffFileSink) Process(chunk *Chunk) error {
+func (sink *diffFileSink) Process(chunk *Chunk) error {
 	if chunk.Type == ChunkTypeEOF && strings.HasSuffix(chunk.Path, ".meta") {
 		return nil // skip
 	}
@@ -175,16 +164,32 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 	}
 
 	if strings.HasSuffix(chunk.Path, ".meta") {
+		if sink.meta != nil {
+			return fmt.Errorf("unexpected 'meta' file %v - we already seen it", chunk.Path)
+		}
 		rawMeta, _ := io.ReadAll(chunk.Reader) //  FIXME: error handling
 		meta, _ := parseDiffMetadata(rawMeta)  //  FIXME: error handling
 		sink.meta = &meta
+
+		go func() {
+
+			err := sink.applyDiff()
+			tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
+			err = innodb.RepairSparse(sink.file)
+			if err != nil {
+				tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
+			}
+			utility.LoggedClose(sink.file, "sink.Close()")
+			close(sink.fileCloseChan)
+		}()
+
 		return nil
 	}
 	if strings.HasSuffix(chunk.Path, ".delta") {
 		// synchronously read data & send it to writer
 		buffer := make([]byte, chunk.PayloadLen)
 		_, err := io.ReadFull(chunk, buffer)
-		tracelog.ErrorLogger.FatalfOnError("ReadFull %v", err)
+		tracelog.ErrorLogger.FatalfOnError(fmt.Sprintf("ReadFull on file %v", chunk.Path), err)
 		sink.writeHere <- buffer
 		return nil
 	}
@@ -192,7 +197,7 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 	return sink.simpleFileSink.Process(chunk)
 }
 
-func (sink diffFileSink) applyDiff() error {
+func (sink *diffFileSink) applyDiff() error {
 	// check stream format in README.md
 	header := make([]byte, sink.meta.PageSize)
 	_, err := sink.readHere.Read(header) // FIXME: check bytes?
@@ -206,10 +211,11 @@ func (sink diffFileSink) applyDiff() error {
 
 	pageNums := make([]innodb.PageNumber, 0, sink.meta.PageSize/4)
 	for i := uint32(1); i < sink.meta.PageSize/4; i++ {
-		pageNums[i] = innodb.PageNumber(binary.BigEndian.Uint32(header[i*4 : i*4+4]))
-		if pageNums[i] == 0xFFFFFFFF {
+		pageNum := innodb.PageNumber(binary.BigEndian.Uint32(header[i*4 : i*4+4]))
+		if pageNum == 0xFFFFFFFF {
 			break
 		}
+		pageNums = append(pageNums, pageNum)
 	}
 
 	if uint32(len(pageNums)) != sink.meta.PageSize/4 && !isLast {
@@ -227,6 +233,9 @@ func (sink diffFileSink) applyDiff() error {
 			return err
 		}
 	}
+
+	tracelog.DebugLogger.Printf("%v pages copied to file %v", len(pageNums), sink.file.Name())
+
 	return nil
 }
 
