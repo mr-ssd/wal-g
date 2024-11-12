@@ -3,6 +3,7 @@ package xbstream
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,11 +25,11 @@ type dataSink interface {
 	// Process should read all data in `chunk` before returning from method
 	//
 	// when chunk.Type == ChunkTypeEOF:
-	// * if xbstream.SinkEOF returned - then sink considered as closed
+	// * if xbstream.ErrSinkEOF returned - then sink considered as closed
 	Process(chunk *Chunk) error
 }
 
-var SinkEOF = errors.New("SinkEOF")
+var ErrSinkEOF = errors.New("ErrSinkEOF")
 
 type simpleFileSink struct {
 	file *os.File
@@ -43,7 +44,7 @@ func newSimpleFileSink(file *os.File) dataSink {
 func (sink *simpleFileSink) Process(chunk *Chunk) error {
 	if chunk.Type == ChunkTypeEOF {
 		_ = sink.file.Close() // FIXME: error handling
-		return SinkEOF
+		return ErrSinkEOF
 	}
 
 	_, err := sink.file.Seek(int64(chunk.Offset), io.SeekStart)
@@ -108,7 +109,7 @@ func (sink *decompressFileSink) Process(chunk *Chunk) error {
 	if chunk.Type == ChunkTypeEOF {
 		close(sink.writeHere)
 		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
-		return SinkEOF
+		return ErrSinkEOF
 	}
 
 	if len(chunk.SparseMap) != 0 {
@@ -170,8 +171,7 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 	if chunk.Type == ChunkTypeEOF && strings.HasSuffix(chunk.Path, ".delta") {
 		close(sink.writeHere)
 		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
-		return SinkEOF
-
+		return ErrSinkEOF
 	}
 
 	if strings.HasSuffix(chunk.Path, ".meta") {
@@ -193,13 +193,7 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 }
 
 func (sink diffFileSink) applyDiff() error {
-	// apply delta:
-	// Delta file format:
-	// * Header - page_size bytes
-	//   'xtra' (4 bytes) or 'XTRA' for final block
-	//   N * page_no (N * 4 bytes) - list of page_no (up to page_size / 4 OR  0xFFFFFFFF-terminated-list)
-	// * Body
-	//   N * <page content>
+	// check stream format in README.md
 	header := make([]byte, sink.meta.PageSize)
 	_, err := sink.readHere.Read(header) // FIXME: check bytes?
 	if err != nil {
@@ -208,23 +202,23 @@ func (sink diffFileSink) applyDiff() error {
 	if !slices.Equal(header[0:4], []byte("XTRA")) && !slices.Equal(header[0:4], []byte("xtra")) {
 		return errors.New("unexpected header in diff file")
 	}
-	is_last := slices.Equal(header[0:4], []byte("XTRA"))
+	isLast := slices.Equal(header[0:4], []byte("XTRA"))
 
-	page_nums := make([]innodb.PageNumber, 0, sink.meta.PageSize/4)
+	pageNums := make([]innodb.PageNumber, 0, sink.meta.PageSize/4)
 	for i := uint32(1); i < sink.meta.PageSize/4; i++ {
-		page_nums[i] = innodb.PageNumber(binary.BigEndian.Uint32(header[i*4 : i*4+4]))
-		if page_nums[i] == 0xFFFFFFFF {
+		pageNums[i] = innodb.PageNumber(binary.BigEndian.Uint32(header[i*4 : i*4+4]))
+		if pageNums[i] == 0xFFFFFFFF {
 			break
 		}
 	}
 
-	if uint32(len(page_nums)) != sink.meta.PageSize/4 && !is_last {
-		// error
+	if uint32(len(pageNums)) != sink.meta.PageSize/4 && !isLast {
+		return fmt.Errorf("invalid '.delta' format: number of pages %v doesn't match delta-header type %v", len(pageNums), header[0:4])
 	}
 
 	// copy pages:
-	for _, page_num := range page_nums {
-		_, err = sink.file.Seek(int64(page_num)*int64(sink.meta.PageSize), io.SeekStart)
+	for _, pageNum := range pageNums {
+		_, err = sink.file.Seek(int64(pageNum)*int64(sink.meta.PageSize), io.SeekStart)
 		if err != nil {
 			return err
 		}
@@ -269,6 +263,9 @@ func (dsf *dataSinkFactory) MapDataSinkPath(path string) string {
 func (dsf *dataSinkFactory) NewDataSink(path string) dataSink {
 	var err error
 	ext := filepath.Ext(path)
+	if ext == ".xbcrypt" {
+		tracelog.ErrorLogger.Fatalf("xbstream contains encrypted files. We don't support it. Use xbstream instead: %v", path)
+	}
 	path = dsf.MapDataSinkPath(path)
 
 	filePath := filepath.Join(dsf.output, path)
@@ -298,7 +295,7 @@ func (dsf *dataSinkFactory) NewDataSink(path string) dataSink {
 	return newSimpleFileSink(file)
 }
 
-// xbstream Disk Sink will unpack archive to disk.
+// xbstream DiskSink will unpack archive to disk.
 // Note: files may be compressed(quicklz,lz4,zstd) / encrypted("NONE", "AES128", "AES192","AES256")
 func DiskSink(stream *Reader, output string, decompress bool, inplace bool) {
 	err := os.MkdirAll(output, 0777) // FIXME: permission & UMASK
@@ -323,7 +320,7 @@ func DiskSink(stream *Reader, output string, decompress bool, inplace bool) {
 		}
 
 		err = sink.Process(chunk)
-		if errors.Is(err, SinkEOF) {
+		if errors.Is(err, ErrSinkEOF) {
 			delete(sinks, path)
 		} else if err != nil {
 			tracelog.ErrorLogger.Printf("Error in chunk %v: %v", chunk.Path, err)

@@ -68,7 +68,6 @@ func (c *spaceIDCollectorImpl) GetFileForSpaceID(spaceID SpaceID) (string, error
 	result, ok := c.collected[spaceID]
 	if ok {
 		return result, nil
-	} else {
-		return "", fmt.Errorf("SpaceID not found")
 	}
+	return "", fmt.Errorf("SpaceID not found")
 }

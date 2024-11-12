@@ -112,7 +112,7 @@ func enrichBackupArgs(backupCmd *exec.Cmd, xtrabackupExtraDirectory string, isFu
 	}
 }
 
-func GetXtrabackupFetcher(restoreCmd, prepareCmd *exec.Cmd, useXbtoolExtract bool, inplace bool) func(folder storage.Folder, backup internal.Backup) {
+func GetXtrabackupFetcher(restoreCmd, prepareCmd *exec.Cmd, useXbtoolExtract bool, inplace bool) internal.Fetcher {
 	return func(folder storage.Folder, backup internal.Backup) {
 		err := xtrabackupFetch(backup.Name, folder, restoreCmd, prepareCmd, useXbtoolExtract, inplace, true)
 		tracelog.ErrorLogger.FatalfOnError("Failed to fetch backup: %v", err)
