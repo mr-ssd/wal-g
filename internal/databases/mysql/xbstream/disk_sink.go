@@ -106,7 +106,6 @@ func newDecompressFileSink(file *os.File, decompressor compression.Decompressor)
 
 func (sink *decompressFileSink) Process(chunk *Chunk) error {
 	if chunk.Type == ChunkTypeEOF {
-		// FIXME: check close procedure
 		close(sink.writeHere)
 		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
 		return SinkEOF
@@ -169,8 +168,6 @@ func (sink diffFileSink) Process(chunk *Chunk) error {
 		return nil // skip
 	}
 	if chunk.Type == ChunkTypeEOF && strings.HasSuffix(chunk.Path, ".delta") {
-		// FIXME: check close procedure
-		_ = sink.file.Close()
 		close(sink.writeHere)
 		<-sink.fileCloseChan // file will be closed in goroutine, wait for it...
 		return SinkEOF
