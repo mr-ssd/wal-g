@@ -172,7 +172,6 @@ func (sink *diffFileSink) Process(chunk *Chunk) error {
 		sink.meta = &meta
 
 		go func() {
-
 			err := sink.applyDiff()
 			tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
 			err = innodb.RepairSparse(sink.file)
