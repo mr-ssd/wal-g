@@ -15,6 +15,7 @@ import (
 type SpaceIDCollector interface {
 	Collect() error
 	GetFileForSpaceID(spaceID SpaceID) (string, error)
+	GetAllFiles() map[SpaceID]string
 }
 
 type spaceIDCollectorImpl struct {
@@ -70,4 +71,8 @@ func (c *spaceIDCollectorImpl) GetFileForSpaceID(spaceID SpaceID) (string, error
 		return result, nil
 	}
 	return "", fmt.Errorf("SpaceID not found")
+}
+
+func (c *spaceIDCollectorImpl) GetAllFiles() map[SpaceID]string {
+	return c.collected
 }

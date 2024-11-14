@@ -270,7 +270,7 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 	reader, writer := io.Pipe()
 	streamReader := xbstream.NewReader(reader, false)
 	wg.Add(1)
-	go xbstream.AsyncDiskSink(&wg, streamReader, destinationDir, true, inplace)
+	go xbstream.AsyncBackupSink(&wg, streamReader, destinationDir, true)
 
 	err = fetcher(backup, writer)
 	if err != nil {

@@ -38,7 +38,7 @@ var (
 			tracelog.ErrorLogger.FatalfOnError("Cannot create destination folder: %v", err)
 
 			streamReader := xbstream.NewReader(src, false)
-			xbstream.DiskSink(streamReader, dst, decompress, inplace)
+			xbstream.BackupSink(streamReader, dst, decompress)
 		},
 	}
 	decompress bool
