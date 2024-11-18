@@ -13,36 +13,51 @@ import (
 
 	"github.com/wal-g/tracelog"
 
+	"github.com/wal-g/wal-g/internal/compression"
 	"github.com/wal-g/wal-g/internal/databases/mysql/innodb"
 	"github.com/wal-g/wal-g/internal/splitmerge"
 	"github.com/wal-g/wal-g/utility"
 )
 
 type diffFileSink struct {
-	dataDirFileSink fileSinkSimple
-	incrementalDir  string
-	fileName        string // relative to datadir (as in xbstream) but without '.delta.zst'
-	meta            *diffMetadata
-	readHere        io.ReadCloser
-	writeHere       chan []byte
-	fileCloseChan   chan struct{}
+	file             *os.File
+	dataDir          string
+	incrementalDir   string
+	filePath         string // relative to datadir (as in xbstream) but without '.delta.zst'
+	meta             *diffMetadata
+	readHere         io.ReadCloser
+	writeHere        chan []byte
+	fileCloseChan    chan struct{}
+	spaceIDCollector innodb.SpaceIDCollector
 }
 
 var _ fileSink = &diffFileSink{}
 
-func newDiffFileSink(file *os.File, incrementalDir string, fileName string) fileSink {
+func newDiffFileSink(
+	dataDir string,
+	incrementalDir string,
+	decompressor compression.Decompressor,
+	spaceIDCollector innodb.SpaceIDCollector,
+) fileSink {
 	// xbstream is a simple archive format. Compression / encryption / delta-files are xtrabackup features.
 	// so, all chunks of one compressed file is a _single_ stream
 	// we should combine data from all file chunks in a single io.Reader before passing to Decompressor:
 	sink := diffFileSink{
-		dataDirFileSink: fileSinkSimple{file},
-		incrementalDir:  incrementalDir,
-		fileName:        fileName,
-		meta:            nil,
-		writeHere:       make(chan []byte),
-		fileCloseChan:   make(chan struct{}),
+		dataDir:          dataDir,
+		incrementalDir:   incrementalDir,
+		meta:             nil,
+		writeHere:        make(chan []byte),
+		fileCloseChan:    make(chan struct{}),
+		spaceIDCollector: spaceIDCollector,
 	}
-	sink.readHere = splitmerge.NewChannelReader(sink.writeHere)
+
+	if decompressor != nil {
+		readHere, err := decompressor.Decompress(splitmerge.NewChannelReader(sink.writeHere))
+		tracelog.ErrorLogger.FatalfOnError("Cannot decompress: %v", err)
+		sink.readHere = readHere
+	} else {
+		sink.readHere = splitmerge.NewChannelReader(sink.writeHere)
+	}
 
 	return &sink
 }
@@ -58,30 +73,7 @@ func (sink *diffFileSink) Process(chunk *Chunk) error {
 	}
 
 	if strings.HasSuffix(chunk.Path, ".meta") {
-		if sink.meta != nil {
-			return fmt.Errorf("unexpected 'meta' file %v - we already seen it", chunk.Path)
-		}
-		rawMeta, _ := io.ReadAll(chunk.Reader) //  FIXME: error handling
-		meta, _ := parseDiffMetadata(rawMeta)  //  FIXME: error handling
-		sink.meta = &meta
-
-		err := sink.writeToIncrementalDir(path.Join(sink.incrementalDir, chunk.Path), rawMeta)
-		if err != nil {
-			return err
-		}
-
-		go func() {
-			err := sink.applyDiff()
-			tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
-			err = innodb.RepairSparse(sink.dataDirFileSink.file)
-			if err != nil {
-				tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
-			}
-			utility.LoggedClose(sink.dataDirFileSink.file, "sink.Close()")
-			close(sink.fileCloseChan)
-		}()
-
-		return nil
+		return sink.ProcessMeta(chunk)
 	}
 	if strings.HasSuffix(chunk.Path, ".delta") {
 		// synchronously read data & send it to writer
@@ -92,13 +84,66 @@ func (sink *diffFileSink) Process(chunk *Chunk) error {
 		return nil
 	}
 
-	return sink.dataDirFileSink.Process(chunk)
+	return fmt.Errorf("unexpected file extension for diff-sink %v", chunk.Path)
+}
+
+func (sink *diffFileSink) ProcessMeta(chunk *Chunk) error {
+	if sink.meta != nil {
+		return fmt.Errorf("unexpected 'meta' file %v - we already seen it", chunk.Path)
+	}
+	rawMeta, err := io.ReadAll(chunk.Reader)
+	if err != nil {
+		return err
+	}
+	meta, err := parseDiffMetadata(rawMeta)
+	if err != nil {
+		return err
+	}
+	sink.meta = &meta
+
+	err = sink.writeToFile(sink.incrementalDir, chunk.Path, rawMeta)
+	if err != nil {
+		return err
+	}
+
+	newFilePath := strings.TrimSuffix(chunk.Path, ".meta")
+	oldFilePath, err := sink.spaceIDCollector.GetFileForSpaceID(meta.SpaceID)
+	if err != nil && !errors.Is(err, innodb.ErrSpaceIDNotFound) {
+		return err
+	}
+	if errors.Is(err, innodb.ErrSpaceIDNotFound) {
+		sink.filePath = newFilePath
+		tracelog.InfoLogger.Printf("New file for SpaceID %v will be created at %s", meta.SpaceID, newFilePath)
+	} else {
+		// in any case update old file... xtrabackup will handle renaming for us
+		sink.filePath = oldFilePath
+		if oldFilePath != newFilePath {
+			tracelog.InfoLogger.Printf("File path for SpaceID %v changed from %s to %s", meta.SpaceID, oldFilePath, newFilePath)
+		}
+	}
+
+	file, err := safeFileCreate(sink.dataDir, sink.filePath)
+	tracelog.ErrorLogger.FatalfOnError("Cannot create new file: %v", err)
+	sink.file = file
+
+	go func() {
+		err := sink.applyDiff()
+		tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
+		err = innodb.RepairSparse(sink.file)
+		if err != nil {
+			tracelog.WarningLogger.Printf("Error during repairSparse(): %v", err)
+		}
+		utility.LoggedClose(sink.file, "sink.Close()")
+		close(sink.fileCloseChan)
+	}()
+
+	return nil
 }
 
 func (sink *diffFileSink) applyDiff() error {
 	// check stream format in README.md
 	header := make([]byte, sink.meta.PageSize)
-	_, err := sink.readHere.Read(header) // FIXME: check bytes?
+	_, err := sink.readHere.Read(header)
 	if err != nil {
 		return err
 	}
@@ -123,7 +168,7 @@ func (sink *diffFileSink) applyDiff() error {
 
 	// copy pages:
 	for _, pageNum := range pageNums {
-		_, err = sink.dataDirFileSink.file.Seek(int64(pageNum)*int64(sink.meta.PageSize), io.SeekStart)
+		_, err = sink.file.Seek(int64(pageNum)*int64(sink.meta.PageSize), io.SeekStart)
 		if err != nil {
 			return err
 		}
@@ -135,17 +180,18 @@ func (sink *diffFileSink) applyDiff() error {
 				return err
 			}
 			// write to data dir:
-			_, err = sink.dataDirFileSink.file.Write(firstPage)
+			_, err = sink.file.Write(firstPage)
 			if err != nil {
 				return err
 			}
 			// write to incremental dir:
-			err = sink.writeFakeDiffToIncrementalDir(path.Join(sink.incrementalDir, sink.fileName+".delta"), header, firstPage)
+			raw := sink.buildFakeDiff(header, firstPage)
+			err := sink.writeToFile(sink.incrementalDir, sink.filePath+".delta", raw)
 			if err != nil {
 				return err
 			}
 		} else {
-			_, err = io.CopyN(sink.dataDirFileSink.file, sink.readHere, int64(sink.meta.PageSize))
+			_, err = io.CopyN(sink.file, sink.readHere, int64(sink.meta.PageSize))
 			if err != nil {
 				return err
 			}
@@ -154,18 +200,18 @@ func (sink *diffFileSink) applyDiff() error {
 		isFirst = false
 	}
 
-	tracelog.DebugLogger.Printf("%v pages copied to file %v", len(pageNums), sink.dataDirFileSink.file.Name())
+	tracelog.DebugLogger.Printf("%v pages copied to file %v", len(pageNums), sink.file.Name())
 
 	return nil
 }
 
-func (sink *diffFileSink) writeToIncrementalDir(filePath string, bytes []byte) error {
-	if !utility.IsInDirectory(filePath, sink.incrementalDir) {
-		tracelog.ErrorLogger.Fatalf("xbstream tries to create file outside incrementalDir: %v", filePath)
+func (sink *diffFileSink) writeToFile(dir string, relFilePath string, bytes []byte) error {
+	if !utility.IsInDirectory(relFilePath, dir) {
+		tracelog.ErrorLogger.Fatalf("xbstream tries to create file outside incrementalDir: %v", relFilePath)
 	}
 
 	file, err := os.OpenFile(
-		filePath,
+		path.Join(dir, relFilePath),
 		os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW,
 		0666, // FIXME: permissions
 	)
@@ -203,9 +249,4 @@ func (sink *diffFileSink) buildFakeDiff(header []byte, page []byte) []byte {
 	binary.BigEndian.PutUint32(raw[8:12], 0xFFFFFFFF)
 	copy(raw[sink.meta.PageSize:], page)
 	return raw
-}
-
-func (sink *diffFileSink) writeFakeDiffToIncrementalDir(filePath string, header []byte, page []byte) error {
-	raw := sink.buildFakeDiff(header, page)
-	return sink.writeToIncrementalDir(filePath, raw)
 }

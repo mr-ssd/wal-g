@@ -12,6 +12,8 @@ import (
 	"github.com/wal-g/tracelog"
 )
 
+var ErrSpaceIDNotFound = errors.New("SpaceID not found")
+
 type SpaceIDCollector interface {
 	Collect() error
 	GetFileForSpaceID(spaceID SpaceID) (string, error)
@@ -70,7 +72,7 @@ func (c *spaceIDCollectorImpl) GetFileForSpaceID(spaceID SpaceID) (string, error
 	if ok {
 		return result, nil
 	}
-	return "", fmt.Errorf("SpaceID not found")
+	return "", ErrSpaceIDNotFound
 }
 
 func (c *spaceIDCollectorImpl) GetAllFiles() map[SpaceID]string {

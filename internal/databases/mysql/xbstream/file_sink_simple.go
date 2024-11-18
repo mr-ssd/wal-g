@@ -9,24 +9,31 @@ import (
 	"github.com/wal-g/tracelog"
 
 	"github.com/wal-g/wal-g/internal/ioextensions"
+	"github.com/wal-g/wal-g/utility"
 )
 
 type fileSinkSimple struct {
-	file *os.File
+	dataDir string
+	file    *os.File
 }
 
 var _ fileSink = &fileSinkSimple{}
 
-func newSimpleFileSink(file *os.File) fileSink {
-	return &fileSinkSimple{file}
+func newSimpleFileSink(filePath string, dataDir string) fileSink {
+	file, err := safeFileCreate(dataDir, filePath)
+	tracelog.ErrorLogger.FatalfOnError("Cannot create new file: %v", err)
+	return &fileSinkSimple{
+		dataDir: dataDir,
+		file:    file,
+	}
 }
 
 func (sink *fileSinkSimple) Process(chunk *Chunk) error {
 	if chunk.Type == ChunkTypeEOF {
-		_ = sink.file.Close() // FIXME: error handling
+		utility.LoggedClose(sink.file, "")
 		return ErrSinkEOF
 	}
-
+	
 	_, err := sink.file.Seek(int64(chunk.Offset), io.SeekStart)
 	tracelog.ErrorLogger.FatalfOnError("seek: %v", err)
 

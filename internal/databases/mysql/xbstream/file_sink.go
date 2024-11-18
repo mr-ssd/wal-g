@@ -2,16 +2,13 @@ package xbstream
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/wal-g/tracelog"
 
 	"github.com/wal-g/wal-g/internal/compression"
 	"github.com/wal-g/wal-g/internal/databases/mysql/innodb"
-	"github.com/wal-g/wal-g/utility"
 )
 
 var ErrSinkEOF = errors.New("ErrSinkEOF")
@@ -32,60 +29,51 @@ type fileSinkFactory struct {
 	spaceIDCollector innodb.SpaceIDCollector
 }
 
-func (fsf *fileSinkFactory) MapDataSinkPath(path string) string {
-	ext := filepath.Ext(path)
+func (fsf *fileSinkFactory) MapDataSinkKey(chunkPath string) string {
+	ext := filepath.Ext(chunkPath)
 	if fsf.decompress {
 		if ext == ".lz4" || ext == ".zst" {
-			path = strings.TrimSuffix(path, ext)
-			ext = filepath.Ext(path)
+			chunkPath = strings.TrimSuffix(chunkPath, ext)
+			ext = filepath.Ext(chunkPath)
 		}
 		if ext == ".qp" {
-			// FIXME: test whether we can have real file with 'qp' extension
-			tracelog.ErrorLogger.Fatal("qpress not supported - restart extraction without 'inplace' feature")
+			tracelog.ErrorLogger.Fatal("qpress not supported - restart extraction without 'decompress' or 'inplace' feature")
 		}
 	}
 	if fsf.inplace {
 		if ext == ".delta" {
-			path = strings.TrimSuffix(path, ext)
+			chunkPath = strings.TrimSuffix(chunkPath, ext)
 		}
 		if ext == ".meta" {
-			path = strings.TrimSuffix(path, ext)
+			chunkPath = strings.TrimSuffix(chunkPath, ext)
 		}
 	}
-	return path
+	return chunkPath
 }
 
-func (fsf *fileSinkFactory) NewDataSink(path string) fileSink {
-	var err error
-	ext := filepath.Ext(path)
+func (fsf *fileSinkFactory) MapDataSinkPath(chunkPath string) string {
+	return fsf.MapDataSinkKey(chunkPath)
+}
+
+func (fsf *fileSinkFactory) NewDataSink(chunkPath string) fileSink {
+	ext := filepath.Ext(chunkPath)
 	if ext == ".xbcrypt" {
-		tracelog.ErrorLogger.Fatalf("xbstream contains encrypted files. We don't support it. Use xbstream instead: %v", path)
-	}
-	path = fsf.MapDataSinkPath(path)
-
-	filePath := filepath.Join(fsf.dataDir, path)
-	if !utility.IsInDirectory(filePath, fsf.dataDir) {
-		tracelog.ErrorLogger.Fatalf("xbstream tries to create file outside destination directory: %v", path)
+		tracelog.ErrorLogger.Fatalf("xbstream contains encrypted files. We don't support it. Use xbstream instead: %v", chunkPath)
 	}
 
-	err = os.MkdirAll(filepath.Dir(filePath), 0777)
-	tracelog.ErrorLogger.FatalfOnError("Cannot create new file: %v", err)
+	filePath := fsf.MapDataSinkPath(chunkPath)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0666) // FIXME: permissions
-	tracelog.ErrorLogger.FatalfOnError("Cannot open new file for write: %v", err)
-
-	// FIXME: fadvise POSIX_FADV_SEQUENTIAL
-	// FIXME: test O_DIRECT
-
+	var decompressor compression.Decompressor = nil
 	if fsf.decompress {
-		decompressor := compression.FindDecompressor(ext)
-		if decompressor != nil {
-			return newFileSinkDecompress(file, decompressor)
-		}
-	}
-	if fsf.inplace {
-		return newDiffFileSink(file, fsf.incrementalDir, path)
+		decompressor = compression.FindDecompressor(ext)
 	}
 
-	return newSimpleFileSink(file)
+	if fsf.inplace {
+		return newDiffFileSink(fsf.dataDir, fsf.incrementalDir, decompressor, fsf.spaceIDCollector)
+	}
+
+	if decompressor != nil {
+		return newFileSinkDecompress(filePath, fsf.dataDir, decompressor)
+	}
+	return newSimpleFileSink(filePath, fsf.dataDir)
 }

@@ -33,17 +33,17 @@ func BackupSink(stream *Reader, output string, decompress bool) {
 		}
 		tracelog.ErrorLogger.FatalfOnError("Cannot read next chunk: %v", err)
 
-		path := factory.MapDataSinkPath(chunk.Path)
-		sink, ok := sinks[path]
+		dsKey := factory.MapDataSinkKey(chunk.Path)
+		sink, ok := sinks[dsKey]
 		if !ok {
 			sink = factory.NewDataSink(chunk.Path)
-			sinks[path] = sink
+			sinks[dsKey] = sink
 			tracelog.DebugLogger.Printf("Extracting %v", chunk.Path)
 		}
 
 		err = sink.Process(chunk)
 		if errors.Is(err, ErrSinkEOF) {
-			delete(sinks, path)
+			delete(sinks, dsKey)
 		} else if err != nil {
 			tracelog.ErrorLogger.Printf("Error in chunk %v: %v", chunk.Path, err)
 		}

@@ -14,7 +14,8 @@ import (
 )
 
 type fileSinkDecompress struct {
-	fileSinkSimple
+	dataDir       string
+	file          *os.File
 	writeHere     chan []byte
 	fileCloseChan chan struct{}
 	xbOffset      uint64
@@ -22,18 +23,24 @@ type fileSinkDecompress struct {
 
 var _ fileSink = &fileSinkDecompress{}
 
-func newFileSinkDecompress(file *os.File, decompressor compression.Decompressor) fileSink {
+func newFileSinkDecompress(filePath string, dataDir string, decompressor compression.Decompressor) fileSink {
 	// xbstream is a simple archive format. Compression / encryption / delta-files are xtrabackup features.
 	// so, all chunks of one compressed file is a _single_ stream
 	// we should combine data from all file chunks in a single io.Reader before passing to Decompressor:
-	sink := fileSinkDecompress{
-		fileSinkSimple: fileSinkSimple{file},
-		writeHere:      make(chan []byte),
-		fileCloseChan:  make(chan struct{}),
-	}
-	reader := splitmerge.NewChannelReader(sink.writeHere)
-	readHere, err := decompressor.Decompress(reader)
+	writeHere := make(chan []byte)
+	readHere, err := decompressor.Decompress(splitmerge.NewChannelReader(writeHere))
 	tracelog.ErrorLogger.FatalfOnError("Cannot decompress: %v", err)
+
+	file, err := safeFileCreate(dataDir, filePath)
+	tracelog.ErrorLogger.FatalfOnError("Cannot open new file for write: %v", err)
+
+	sink := &fileSinkDecompress{
+		dataDir:       dataDir,
+		file:          file,
+		writeHere:     writeHere,
+		fileCloseChan: make(chan struct{}),
+		xbOffset:      uint64(0),
+	}
 
 	go func() {
 		_, err := io.Copy(file, readHere)
@@ -46,7 +53,7 @@ func newFileSinkDecompress(file *os.File, decompressor compression.Decompressor)
 		close(sink.fileCloseChan)
 	}()
 
-	return &sink
+	return sink
 }
 
 func (sink *fileSinkDecompress) Process(chunk *Chunk) error {
