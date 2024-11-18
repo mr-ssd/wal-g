@@ -136,6 +136,9 @@ func (sink *diffFileSink) applyDiff() error {
 			}
 			// write to data dir:
 			_, err = sink.dataDirFileSink.file.Write(firstPage)
+			if err != nil {
+				return err
+			}
 			// write to incremental dir:
 			err = sink.writeFakeDiffToIncrementalDir(path.Join(sink.incrementalDir, sink.fileName+".delta"), header, firstPage)
 			if err != nil {
@@ -164,7 +167,7 @@ func (sink *diffFileSink) writeToIncrementalDir(filePath string, bytes []byte) e
 	file, err := os.OpenFile(
 		filePath,
 		os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW,
-		0666, // FIXME: premissions
+		0666, // FIXME: permissions
 	)
 	if err != nil {
 		return err

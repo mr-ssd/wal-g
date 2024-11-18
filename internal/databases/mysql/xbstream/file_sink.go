@@ -71,7 +71,7 @@ func (fsf *fileSinkFactory) NewDataSink(path string) fileSink {
 	err = os.MkdirAll(filepath.Dir(filePath), 0777)
 	tracelog.ErrorLogger.FatalfOnError("Cannot create new file: %v", err)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0666) // FIXME: premissions
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0666) // FIXME: permissions
 	tracelog.ErrorLogger.FatalfOnError("Cannot open new file for write: %v", err)
 
 	// FIXME: fadvise POSIX_FADV_SEQUENTIAL
