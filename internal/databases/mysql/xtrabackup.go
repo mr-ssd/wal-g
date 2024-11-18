@@ -228,13 +228,13 @@ func xtrabackupFetchClassic(backup internal.Backup, restoreCmd *exec.Cmd, prepar
 func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplace bool, isLast bool) error {
 	// This is equivalent to:
 	//
-	// wal-g xb extract --decompress /var/lib/mysql  < BASE.xbstream
+	// wal-g xb [extract|extract-diff] --decompress /var/lib/mysql  < BASE.xbstream
 	// xtrabackup --prepare --apply-log-only --target-dir=/var/lib/mysql
 	//
-	// wal-g xb extract --decompress /data/inc1  < INC1.xbstream
+	// wal-g xb [extract|extract-diff] --decompress [--incremental-dir] /data/inc1   < INC1.xbstream
 	// xtrabackup --prepare --apply-log-only --target-dir=/var/lib/mysql --incremental-dir=/data/inc1
 	//
-	// wal-g xb extract --decompress /data/inc2  < INC2.xbstream
+	// wal-g xb [extract|extract-diff] --decompress [--incremental-dir] /data/inc2  < INC2.xbstream
 	// xtrabackup --prepare                  --target-dir=/var/lib/mysql --incremental-dir=/data/inc2
 
 	var sentinel StreamSentinelDto
@@ -244,7 +244,8 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 	dataDir, err := internal.GetLogsDstSettings(conf.MysqlDataDir)
 	tracelog.ErrorLogger.FatalfOnError("Failed to get config value: %v", err)
 
-	incrementalBackupDir := viper.GetString(conf.MysqlIncrementalBackupDst)
+	incrementalBackupDir, err := internal.GetLogsDstSettings(conf.MysqlIncrementalBackupDst)
+	tracelog.ErrorLogger.FatalfOnError("Failed to get config value: %v", err)
 	tempDeltaDir, err := prepareTemporaryDirectory(incrementalBackupDir)
 	tracelog.ErrorLogger.FatalfOnError("Failed to prepare temp dir: %v", err)
 
