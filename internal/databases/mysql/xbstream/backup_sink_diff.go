@@ -13,7 +13,7 @@ import (
 
 // DiffBackupSink doesn't try to replicate sophisticated xtrabackup logic
 // instead, we do following:
-// * extract all non-diff files to incrementDir
+// * extract all non-diff files to incrementalDir
 // * apply diff-files to dataDir 'inplace' + add truncated versions of diff-files to incrementalDir
 // * let xtrabackup do its job
 func DiffBackupSink(stream *Reader, dataDir string, incrementalDir string) {

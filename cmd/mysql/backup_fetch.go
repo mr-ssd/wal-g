@@ -14,7 +14,7 @@ const (
 	backupFetchShortDescription = "Fetch desired backup from storage"
 	targetUserDataDescription   = "Fetch storage backup which has the specified user data"
 	useXbtoolExtractDescription = "Use internal xbtool to extract data from xbstream"
-	inplaceDescription          = "(DANGEROUS) Apply diff-s inpace (no extra space required)"
+	inplaceDescription          = "(DANGEROUS) Apply diff-s inplace (reduce required disk space)"
 )
 
 var (
