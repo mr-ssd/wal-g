@@ -68,7 +68,7 @@ func (fsf *fileSinkFactory) NewDataSink(chunkPath string) fileSink {
 		decompressor = compression.FindDecompressor(ext)
 	}
 
-	if fsf.inplace {
+	if fsf.inplace && (strings.HasSuffix(chunkPath, ".meta") || strings.HasSuffix(chunkPath, ".delta")) {
 		return newDiffFileSink(fsf.dataDir, fsf.incrementalDir, decompressor, fsf.spaceIDCollector)
 	}
 

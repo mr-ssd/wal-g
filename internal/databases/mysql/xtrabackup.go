@@ -214,12 +214,16 @@ func xtrabackupFetchClassic(backup internal.Backup, restoreCmd *exec.Cmd, prepar
 
 	if prepareCmd != nil {
 		tracelog.InfoLogger.Printf("Preparing %s with cmd %v", backup.Name, prepareCmd.Args)
+		prepareCmd.Stdout = os.Stdout
+		prepareCmd.Stderr = os.Stderr
 		err = prepareCmd.Run()
 		if err != nil {
 			tracelog.ErrorLogger.Printf("Failed to prepare fetched backup: %v", err)
 			return err
 		}
 		tracelog.InfoLogger.Printf("Prepared %s", backup.Name)
+	} else {
+		tracelog.InfoLogger.Printf("WALG_MYSQL_BACKUP_PREPARE_COMMAND not configured. Skipping prepare phase")
 	}
 
 	return os.RemoveAll(tempDeltaDir)
@@ -263,10 +267,6 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 		return err
 	}
 
-	destinationDir := tempDeltaDir
-	if !sentinel.IsIncremental {
-		destinationDir = dataDir
-	}
 	var wg sync.WaitGroup
 	reader, writer := io.Pipe()
 	streamReader := xbstream.NewReader(reader, false)
@@ -274,9 +274,9 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 
 	if inplace {
 		// apply diff-files to dataDir inplace (and leave required leftovers incrementalDir)
-		go xbstream.AsyncDiffBackupSink(&wg, streamReader, destinationDir, tempDeltaDir)
+		go xbstream.AsyncDiffBackupSink(&wg, streamReader, dataDir, tempDeltaDir)
 	} else {
-		go xbstream.AsyncBackupSink(&wg, streamReader, destinationDir, true)
+		go xbstream.AsyncBackupSink(&wg, streamReader, dataDir, true)
 	}
 
 	err = fetcher(backup, writer)
@@ -289,12 +289,16 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 
 	if prepareCmd != nil {
 		tracelog.InfoLogger.Printf("Preparing %s with cmd %v", backup.Name, prepareCmd.Args)
+		prepareCmd.Stdout = os.Stdout
+		prepareCmd.Stderr = os.Stderr
 		err = prepareCmd.Run()
 		if err != nil {
 			tracelog.ErrorLogger.Printf("Failed to prepare fetched backup: %v", err)
 			return err
 		}
 		tracelog.InfoLogger.Printf("Prepared %s", backup.Name)
+	} else {
+		tracelog.InfoLogger.Printf("WALG_MYSQL_BACKUP_PREPARE_COMMAND not configured. Skipping prepare phase")
 	}
 
 	return os.RemoveAll(tempDeltaDir)

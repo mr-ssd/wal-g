@@ -1,6 +1,7 @@
 package innodb
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,16 +9,14 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/go-openapi/errors"
 	"github.com/wal-g/tracelog"
 )
 
 var ErrSpaceIDNotFound = errors.New("SpaceID not found")
 
 type SpaceIDCollector interface {
-	Collect() error
+	// GetFileForSpaceID locates InnoDB file (path relative to dataDir) for requested SpaceID
 	GetFileForSpaceID(spaceID SpaceID) (string, error)
-	GetAllFiles() map[SpaceID]string
 }
 
 type spaceIDCollectorImpl struct {
@@ -27,35 +26,48 @@ type spaceIDCollectorImpl struct {
 
 var _ SpaceIDCollector = &spaceIDCollectorImpl{}
 
-func NewSpaceIDCollector(dataDir string) SpaceIDCollector {
-	return &spaceIDCollectorImpl{dataDir: dataDir}
-}
+func NewSpaceIDCollector(dataDir string) (SpaceIDCollector, error) {
+	result := &spaceIDCollectorImpl{dataDir: dataDir}
+	result.collected = make(map[SpaceID]string)
 
-func (c *spaceIDCollectorImpl) Collect() error {
-	c.collected = make(map[SpaceID]string)
+	// https://github.com/percona/percona-xtrabackup/blob/percona-xtrabackup-8.0.35-30/storage/innobase/xtrabackup/src/xtrabackup.cc#L5321-L5567
 
-	err := filepath.WalkDir(c.dataDir, func(path string, info fs.DirEntry, walkErr error) error {
-		tracelog.ErrorLogger.FatalfOnError("Error encountered during datadir traverse", walkErr)
-		if !info.IsDir() && strings.HasSuffix(info.Name(), ".ibd") {
-			err := c.collect(path)
+	err := filepath.WalkDir(dataDir, func(path string, info fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("error encountered during dataDir traverse %v: %w", path, walkErr)
+		}
+		if !info.IsDir() && (strings.HasSuffix(info.Name(), ".ibd") || info.Name() == "ibdata1" || info.Name() == "undo_001" || info.Name() == "undo_002") {
+			err := result.collect(path)
 			if err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+
+	tracelog.DebugLogger.Printf("SpaceIDCollector for dir %v collected %v", dataDir, result.collected)
+
+	return result, nil
 }
 
 func (c *spaceIDCollectorImpl) collect(filePath string) error {
 	// read first FPS page (always first page in the file)
 	file, err := os.OpenFile(filePath, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // FIXME: test performance with O_SYNC
-	tracelog.ErrorLogger.FatalfOnError("Cannot open file: %v", err)
-
-	reader := NewPageReader(file)
-	if reader == nil {
-		return errors.NotFound("File %v not found", filePath)
+	if err != nil {
+		return fmt.Errorf("error opening file %v: %w", filePath, err)
 	}
+
+	reader, err := NewPageReader(file)
+	if err != nil {
+		return fmt.Errorf("cannot collect spaceID from file %v: %w", filePath, err)
+	}
+	if reader == nil {
+		return fmt.Errorf("canot read innodb file %v", filePath)
+	}
+	// FIXME: use os.Root [go 1.24] https://github.com/golang/go/issues/67002
 	if !strings.HasPrefix(filePath, c.dataDir) {
 		tracelog.ErrorLogger.Fatalf("File %v is out of data dir %v", filePath, c.dataDir)
 	}
@@ -65,16 +77,9 @@ func (c *spaceIDCollectorImpl) collect(filePath string) error {
 }
 
 func (c *spaceIDCollectorImpl) GetFileForSpaceID(spaceID SpaceID) (string, error) {
-	if c.collected == nil {
-		return "", fmt.Errorf("spaceIDCollectorImpl not initialized")
-	}
 	result, ok := c.collected[spaceID]
 	if ok {
 		return result, nil
 	}
-	return "", ErrSpaceIDNotFound
-}
-
-func (c *spaceIDCollectorImpl) GetAllFiles() map[SpaceID]string {
-	return c.collected
+	return "", fmt.Errorf("file for SpaceID %v not found: %w", spaceID, ErrSpaceIDNotFound)
 }

@@ -17,12 +17,15 @@ func BackupSink(stream *Reader, output string, decompress bool) {
 	err := os.MkdirAll(output, 0777) // FIXME: permission & UMASK
 	tracelog.ErrorLogger.FatalOnError(err)
 
+	spaceIDCollector, err := innodb.NewSpaceIDCollector(output)
+	tracelog.ErrorLogger.FatalOnError(err)
+
 	factory := fileSinkFactory{
 		dataDir:          output,
 		incrementalDir:   "",
 		decompress:       decompress,
 		inplace:          false,
-		spaceIDCollector: innodb.NewSpaceIDCollector(output),
+		spaceIDCollector: spaceIDCollector,
 	}
 
 	sinks := make(map[string]fileSink)

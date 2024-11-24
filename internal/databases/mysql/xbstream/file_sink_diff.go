@@ -4,14 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/wal-g/tracelog"
 	"io"
 	"os"
-	"path"
 	"slices"
 	"strings"
-	"syscall"
-
-	"github.com/wal-g/tracelog"
 
 	"github.com/wal-g/wal-g/internal/compression"
 	"github.com/wal-g/wal-g/internal/databases/mysql/innodb"
@@ -63,6 +60,9 @@ func newDiffFileSink(
 }
 
 func (sink *diffFileSink) Process(chunk *Chunk) error {
+	// FIXME: remove
+	tracelog.DebugLogger.Printf("Process chunk for %v: %v", chunk.Path, chunk.PayloadLen)
+
 	if chunk.Type == ChunkTypeEOF && strings.HasSuffix(chunk.Path, ".meta") {
 		return nil // skip
 	}
@@ -206,15 +206,7 @@ func (sink *diffFileSink) applyDiff() error {
 }
 
 func (sink *diffFileSink) writeToFile(dir string, relFilePath string, bytes []byte) error {
-	if !utility.IsInDirectory(relFilePath, dir) {
-		tracelog.ErrorLogger.Fatalf("xbstream tries to create file outside incrementalDir: %v", relFilePath)
-	}
-
-	file, err := os.OpenFile(
-		path.Join(dir, relFilePath),
-		os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW,
-		0666, // FIXME: permissions
-	)
+	file, err := safeFileCreate(dir, relFilePath)
 	if err != nil {
 		return err
 	}

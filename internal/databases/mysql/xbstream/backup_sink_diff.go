@@ -20,12 +20,15 @@ func DiffBackupSink(stream *Reader, dataDir string, incrementalDir string) {
 	err := os.MkdirAll(dataDir, 0777) // FIXME: permission & UMASK
 	tracelog.ErrorLogger.FatalOnError(err)
 
+	spaceIDCollector, err := innodb.NewSpaceIDCollector(dataDir)
+	tracelog.ErrorLogger.FatalOnError(err)
+
 	factory := fileSinkFactory{
 		dataDir:          dataDir,
 		incrementalDir:   incrementalDir,
 		decompress:       true, // always decompress files when diff-files applied
 		inplace:          true,
-		spaceIDCollector: innodb.NewSpaceIDCollector(dataDir),
+		spaceIDCollector: spaceIDCollector,
 	}
 
 	sinks := make(map[string]fileSink)

@@ -21,7 +21,8 @@ func RepairSparse(file *os.File) error {
 		return err
 	}
 
-	pageReader := NewPageReader(file)
+	pageReader, err := NewPageReader(file)
+	tracelog.ErrorLogger.FatalOnError(err)
 	pageNumber := 1 // Never compress/decompress the first page (FSP_HDR)
 	for {
 		page, err := pageReader.ReadRaw(PageNumber(pageNumber))
