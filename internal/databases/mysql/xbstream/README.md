@@ -67,7 +67,7 @@ space_flags = 33
 * Body
    N * <page content>
 ```
-Unarchiver places pages to its correct place if file (at page_size * page_number offset).
+Unarchiver places pages to its correct place in the file (at page_size * page_number offset).
 
 It is Ok to expect that `.meta` file will precede `.delta` file in archive.
 

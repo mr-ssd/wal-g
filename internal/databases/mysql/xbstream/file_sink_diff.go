@@ -89,7 +89,7 @@ func (sink *diffFileSink) Process(chunk *Chunk) error {
 
 func (sink *diffFileSink) ProcessMeta(chunk *Chunk) error {
 	if sink.meta != nil {
-		return fmt.Errorf("unexpected 'meta' file %v - we already seen it", chunk.Path)
+		return fmt.Errorf("unexpected '.meta' file %v - we already seen it", chunk.Path)
 	}
 	rawMeta, err := io.ReadAll(chunk.Reader)
 	if err != nil {
@@ -106,23 +106,46 @@ func (sink *diffFileSink) ProcessMeta(chunk *Chunk) error {
 		return err
 	}
 
+	// xbstream instructs us to store file at this path:
 	newFilePath := strings.TrimSuffix(chunk.Path, ".meta")
+
+	destinationDir := sink.dataDir
+	destinationFilePath := newFilePath
+
+	// we observed this SpaceID at the following path:
 	oldFilePath, err := sink.spaceIDCollector.GetFileForSpaceID(meta.SpaceID)
 	if err != nil && !errors.Is(err, innodb.ErrSpaceIDNotFound) {
 		return err
 	}
 	if errors.Is(err, innodb.ErrSpaceIDNotFound) {
-		sink.filePath = newFilePath
-		tracelog.InfoLogger.Printf("New file for SpaceID %v will be created at %s", meta.SpaceID, newFilePath)
+		checkErr := sink.spaceIDCollector.CheckFileForSpaceID(meta.SpaceID, newFilePath)
+		if checkErr != nil && !errors.Is(checkErr, innodb.ErrSpaceIDNotFound) {
+			tracelog.ErrorLogger.Printf("CheckFileForSpaceID: %v %v: %v", meta.SpaceID, newFilePath, checkErr)
+			return err // return original error
+		}
+		if errors.Is(checkErr, innodb.ErrSpaceIDNotFound) {
+			// we thries twice and still haven't found Tablespace in datadir. Highly likely that this a new Tablespace.
+			// let xtrabackup to decide what to do with it - send it too incremental dir:
+			destinationDir = sink.incrementalDir
+			destinationFilePath = newFilePath
+			tracelog.InfoLogger.Printf("New file for SpaceID %v will be created at %s", meta.SpaceID, newFilePath)
+		} else {
+			// we have found Tablespace at `newFilePath` path.
+			// send it to dataDir
+			destinationDir = sink.dataDir
+			destinationFilePath = newFilePath
+			tracelog.DebugLogger.Printf("Our spaceId collector failed to find SpaceID %v, however it is at %v", meta.SpaceID, newFilePath)
+		}
 	} else {
-		// in any case update old file... xtrabackup will handle renaming for us
-		sink.filePath = oldFilePath
+		// We have found Tablespace - use it:
+		destinationDir = sink.dataDir
+		destinationFilePath = oldFilePath
 		if oldFilePath != newFilePath {
 			tracelog.InfoLogger.Printf("File path for SpaceID %v changed from %s to %s", meta.SpaceID, oldFilePath, newFilePath)
 		}
 	}
 
-	file, err := safeFileCreate(sink.dataDir, sink.filePath)
+	file, err := safeFileCreate(destinationDir, destinationFilePath)
 	tracelog.ErrorLogger.FatalfOnError("Cannot create new file: %v", err)
 	sink.file = file
 
@@ -173,6 +196,9 @@ func (sink *diffFileSink) applyDiff() error {
 			return err
 		}
 
+		// we are trying to leave as much work as possible to xtrabackup (e.g. files renaming)
+		// so, we are writing minimal possible `delta` file to incremental dir in order to trigger xtrabackup
+		// to do its work:
 		if isFirst {
 			firstPage := make([]byte, sink.meta.PageSize)
 			_, err = sink.readHere.Read(firstPage)
@@ -186,7 +212,7 @@ func (sink *diffFileSink) applyDiff() error {
 			}
 			// write to incremental dir:
 			raw := sink.buildFakeDiff(header, firstPage)
-			err := sink.writeToFile(sink.incrementalDir, sink.filePath+".delta", raw)
+			err = sink.writeToFile(sink.incrementalDir, sink.filePath+".delta", raw)
 			if err != nil {
 				return err
 			}

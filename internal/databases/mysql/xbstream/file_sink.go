@@ -69,11 +69,22 @@ func (fsf *fileSinkFactory) NewDataSink(chunkPath string) fileSink {
 	}
 
 	if fsf.inplace && (strings.HasSuffix(chunkPath, ".meta") || strings.HasSuffix(chunkPath, ".delta")) {
+		tracelog.DebugLogger.Printf("Extracting [AUTO]/%v", chunkPath)
 		return newDiffFileSink(fsf.dataDir, fsf.incrementalDir, decompressor, fsf.spaceIDCollector)
 	}
 
-	if decompressor != nil {
-		return newFileSinkDecompress(filePath, fsf.dataDir, decompressor)
+	// send regular files to incrementalDir (if it is configured)
+	destinationDir := fsf.incrementalDir
+	if destinationDir == "" {
+		destinationDir = fsf.dataDir
+		tracelog.DebugLogger.Printf("Extracting [DATA]/%v", chunkPath)
+	} else {
+		tracelog.DebugLogger.Printf("Extracting [INCR]/%v", chunkPath)
+
 	}
-	return newSimpleFileSink(filePath, fsf.dataDir)
+
+	if decompressor != nil {
+		return newFileSinkDecompress(filePath, destinationDir, decompressor)
+	}
+	return newSimpleFileSink(filePath, destinationDir)
 }

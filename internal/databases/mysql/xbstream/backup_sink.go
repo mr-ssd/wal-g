@@ -41,7 +41,6 @@ func BackupSink(stream *Reader, output string, decompress bool) {
 		if !ok {
 			sink = factory.NewDataSink(chunk.Path)
 			sinks[dsKey] = sink
-			tracelog.DebugLogger.Printf("Extracting %v", chunk.Path)
 		}
 
 		err = sink.Process(chunk)

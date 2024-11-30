@@ -44,7 +44,6 @@ func DiffBackupSink(stream *Reader, dataDir string, incrementalDir string) {
 		if !ok {
 			sink = factory.NewDataSink(chunk.Path)
 			sinks[dsKey] = sink
-			tracelog.DebugLogger.Printf("Extracting %v", chunk.Path)
 		}
 
 		err = sink.Process(chunk)
@@ -60,6 +59,7 @@ func DiffBackupSink(stream *Reader, dataDir string, incrementalDir string) {
 	}
 }
 
+// Deprecated: name doesnt match actual behaviour
 func AsyncDiffBackupSink(wg *sync.WaitGroup, stream *Reader, dataDir string, incrementalDir string) {
 	defer wg.Done()
 	DiffBackupSink(stream, dataDir, incrementalDir)
