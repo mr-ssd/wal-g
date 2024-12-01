@@ -15,7 +15,7 @@ jobs:
   release-ubuntu:
     strategy:
       matrix:
-        os: [ ubuntu-18.04, ubuntu-20.04 ]
+        os: [ ubuntu-20.04, ubuntu-22.04, ubuntu-24.04 ]
         db: [ pg, mysql, sqlserver, redis, mongo, fdb, gp ]
       fail-fast: false
     runs-on: ${{ matrix.os }}
@@ -35,16 +35,9 @@ jobs:
       - name: Get dependencies
         run: |
           go get -v -t -d ./...
-          if [ -f Gopkg.toml ]; then
-           curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-           dep ensure
-          fi
+
       - name: Make deps
         run: make deps
-
-      - name: Fix LZO (ubuntu-18.04)
-        if: matrix.os == 'ubuntu-18.04'
-        run: echo "CGO_LDFLAGS=-no-pie" >> $GITHUB_ENV
 
       - name: Build WAL-G
         run: make ${{ matrix.db }}_build
@@ -106,12 +99,7 @@ jobs:
             export GOPATH=$HOME/go          
             export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
             
-            
             go get -v -t -d ./...
-            if [ -f Gopkg.toml ]; then
-              curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-              dep ensure
-            fi
             
             git config --global --add safe.directory /home/runner/work/wal-g/wal-g
             git config --global --add safe.directory /home/runner/work/wal-g/wal-g/submodules/brotli

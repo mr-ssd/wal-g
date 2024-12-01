@@ -1,11 +1,6 @@
 name: Unit tests
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+on: [ workflow_dispatch, push, pull_request ]
 
 env:
   GO_VERSION: "1.22"
@@ -31,10 +26,6 @@ jobs:
       - name: Get dependencies
         run: |
           go get -v -t -d ./...
-          if [ -f Gopkg.toml ]; then
-           curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-           dep ensure
-          fi
 
       - name: Test
         run: make all_unittests

@@ -1,7 +1,7 @@
 FROM debian:buster
 
-# Note: we used to use `golang:buster` here... however it provides go 1.20.x, while we use 1.22+
-# Upgrade to `golang:bullseye` doesn't work - it incopatible with ubuntu 18.04 (GLIBC version issues).
+# Note: we used `golang:buster` here... however it provides go 1.20.x, while we upgraded to 1.22+
+# Migration to `golang:bullseye` doesn't work - it incopatible with ubuntu 18.04 (GLIBC version issues).
 # So, install it manually:
 
 ENV DEBIAN_FRONTEND noninteractive
