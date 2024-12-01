@@ -34,7 +34,8 @@ func NewSpaceIDCollector(dataDir string) (SpaceIDCollector, error) {
 	result := &spaceIDCollectorImpl{dataDir: dataDir}
 	result.collected = make(map[SpaceID]string)
 
-	// https://github.com/percona/percona-xtrabackup/blob/percona-xtrabackup-8.0.35-30/storage/innobase/xtrabackup/src/xtrabackup.cc#L5321-L5567
+	// https://github.com/percona/percona-xtrabackup/blob/percona-xtrabackup-8.0.35-30/
+	// storage/innobase/xtrabackup/src/xtrabackup.cc#L5321-L5567
 
 	err := filepath.WalkDir(dataDir, func(path string, info fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
