@@ -26,7 +26,7 @@ func TestBuildFakeDiff(t *testing.T) {
 	sink := &diffFileSink{
 		meta: &diffMetadata{PageSize: uint32(pageSize)},
 	}
-	actual := sink.buildFakeDiff(header, page)
+	actual := sink.buildFakeDelta(header, page)
 	assert.Equal(t, expected, actual)
 }
 

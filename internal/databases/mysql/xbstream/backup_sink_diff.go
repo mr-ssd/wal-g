@@ -50,7 +50,7 @@ func DiffBackupSink(stream *Reader, dataDir string, incrementalDir string) {
 		if errors.Is(err, ErrSinkEOF) {
 			delete(sinks, dsKey)
 		} else if err != nil {
-			tracelog.ErrorLogger.Printf("Error in chunk %v: %v", chunk.Path, err)
+			tracelog.ErrorLogger.Fatalf("Error in chunk %v: %v", chunk.Path, err)
 		}
 	}
 
@@ -59,7 +59,7 @@ func DiffBackupSink(stream *Reader, dataDir string, incrementalDir string) {
 	}
 }
 
-// Deprecated: name doesnt match actual behaviour
+// Deprecated: name doesnt match actual behavior
 func AsyncDiffBackupSink(wg *sync.WaitGroup, stream *Reader, dataDir string, incrementalDir string) {
 	defer wg.Done()
 	DiffBackupSink(stream, dataDir, incrementalDir)

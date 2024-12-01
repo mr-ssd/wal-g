@@ -33,7 +33,7 @@ func (sink *fileSinkSimple) Process(chunk *Chunk) error {
 		utility.LoggedClose(sink.file, "")
 		return ErrSinkEOF
 	}
-	
+
 	_, err := sink.file.Seek(int64(chunk.Offset), io.SeekStart)
 	tracelog.ErrorLogger.FatalfOnError("seek: %v", err)
 

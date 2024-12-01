@@ -10,6 +10,7 @@ RUN apt-get update && \
         s3cmd \
         jq \
         lsb-release \
+        bsdmainutils \
         gnupg2
 
 # Install xtrabackup

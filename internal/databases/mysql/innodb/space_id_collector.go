@@ -6,6 +6,7 @@ import (
 	"github.com/wal-g/wal-g/utility"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -39,9 +40,9 @@ func NewSpaceIDCollector(dataDir string) (SpaceIDCollector, error) {
 		if walkErr != nil {
 			return fmt.Errorf("error encountered during dataDir traverse %v: %w", path, walkErr)
 		}
-		if !info.IsDir() && (strings.HasSuffix(info.Name(), ".ibd") || info.Name() == "ibdata1" || info.Name() == "undo_001" || info.Name() == "undo_002") {
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".ibd") {
 			_, err := result.collect(path)
-			if err != nil {
+			if err != nil && !errors.Is(err, ErrSpaceIDNotFound) {
 				return err
 			}
 		}
@@ -60,15 +61,14 @@ func (c *spaceIDCollectorImpl) collect(filePath string) (SpaceID, error) {
 	// read first FPS page (always first page in the file)
 	file, err := os.OpenFile(filePath, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // FIXME: test performance with O_SYNC
 	if err != nil {
-		return SpaceIDUnknown, fmt.Errorf("error opening file %v: %w", filePath, err)
+		tracelog.DebugLogger.Printf("error opening file %v: %v", filePath, err)
+		return SpaceIDUnknown, ErrSpaceIDNotFound
 	}
 
 	reader, err := NewPageReader(file)
 	if err != nil {
-		return SpaceIDUnknown, fmt.Errorf("cannot collect spaceID from file %v: %w", filePath, err)
-	}
-	if reader == nil {
-		return SpaceIDUnknown, fmt.Errorf("canot read innodb file %v", filePath)
+		tracelog.InfoLogger.Printf("cannot collect spaceID from file %v: %v", filePath, err)
+		return SpaceIDUnknown, ErrSpaceIDNotFound
 	}
 	defer utility.LoggedClose(reader, "")
 
@@ -95,11 +95,11 @@ func (c *spaceIDCollectorImpl) GetFileForSpaceID(spaceID SpaceID) (string, error
 func (c *spaceIDCollectorImpl) CheckFileForSpaceID(spaceID SpaceID, filePath string) error {
 	// MySQL can store InnoDB files in multiple places, with different file extensions
 	// we may not be aware of these files... so check suggested pair spaceID + filePath
-	actualSpaceId, err := c.collect(filePath)
+	actualSpaceID, err := c.collect(path.Join(c.dataDir, filePath))
 	if err != nil {
 		return err
 	}
-	if actualSpaceId != spaceID {
+	if actualSpaceID != spaceID {
 		return ErrSpaceIDNotFound
 	}
 	return nil

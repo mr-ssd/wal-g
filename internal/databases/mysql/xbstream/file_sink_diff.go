@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/wal-g/tracelog"
+	"github.com/wal-g/wal-g/utility"
 	"io"
 	"os"
 	"slices"
@@ -13,19 +14,31 @@ import (
 	"github.com/wal-g/wal-g/internal/compression"
 	"github.com/wal-g/wal-g/internal/databases/mysql/innodb"
 	"github.com/wal-g/wal-g/internal/splitmerge"
-	"github.com/wal-g/wal-g/utility"
 )
 
 type diffFileSink struct {
 	file             *os.File
 	dataDir          string
 	incrementalDir   string
-	deltaChunkPath   string // This path is relative to datadir (as in xbstream)
 	meta             *diffMetadata
 	readHere         io.ReadCloser
 	writeHere        chan []byte
 	fileCloseChan    chan struct{}
 	spaceIDCollector innodb.SpaceIDCollector
+	strategy         diffFileStrategy
+}
+
+type diffStrategyType int
+
+const (
+	applyDiffStrategy diffStrategyType = iota
+	simpleCopyStrategy
+)
+
+type diffFileStrategy struct {
+	destinationDir      string
+	destinationFilePath string
+	strategy            diffStrategyType
 }
 
 var _ fileSink = &diffFileSink{}
@@ -60,9 +73,6 @@ func newDiffFileSink(
 }
 
 func (sink *diffFileSink) Process(chunk *Chunk) error {
-	// FIXME: remove
-	tracelog.DebugLogger.Printf("Process chunk for %v: %v", chunk.Path, chunk.PayloadLen)
-
 	if chunk.Type == ChunkTypeEOF && strings.HasSuffix(chunk.Path, ".meta") {
 		return nil // skip
 	}
@@ -106,17 +116,40 @@ func (sink *diffFileSink) ProcessMeta(chunk *Chunk) error {
 		return err
 	}
 
-	sink.deltaChunkPath = chunk.Path
-
-	destinationDir, destinationFilePath, err := sink.route(chunk)
+	strategy, err := sink.getHandlingStrategy(chunk)
 	if err != nil {
+		tracelog.ErrorLogger.Printf("No handling strategy found for chunk %v", chunk.Path)
 		return err
 	}
+	sink.strategy = strategy
 
-	file, err := safeFileCreate(destinationDir, destinationFilePath)
+	file, err := safeFileCreate(sink.strategy.destinationDir, sink.strategy.destinationFilePath)
 	tracelog.ErrorLogger.FatalfOnError("Cannot create new file: %v", err)
 	sink.file = file
 
+	switch strategy.strategy {
+	case simpleCopyStrategy:
+		sink.startSimpleCopyStrategy()
+	case applyDiffStrategy:
+		sink.startApplyDiffStrategy()
+	default:
+		return fmt.Errorf("unknown diff-handling strategy %v for file %v", strategy.strategy, chunk.Path)
+	}
+
+	return nil
+}
+
+func (sink *diffFileSink) startSimpleCopyStrategy() {
+	go func() {
+		_, err := io.Copy(sink.file, sink.readHere)
+		tracelog.ErrorLogger.FatalfOnError("Cannot copy data: %v", err)
+		// copying to INCR dir - we don't need to fix Sparse files
+		utility.LoggedClose(sink.file, "datasink.Close()")
+		close(sink.fileCloseChan)
+	}()
+}
+
+func (sink *diffFileSink) startApplyDiffStrategy() {
 	go func() {
 		err := sink.applyDiff()
 		tracelog.ErrorLogger.FatalfOnError("Cannot handle diff: %v", err)
@@ -127,43 +160,54 @@ func (sink *diffFileSink) ProcessMeta(chunk *Chunk) error {
 		utility.LoggedClose(sink.file, "sink.Close()")
 		close(sink.fileCloseChan)
 	}()
-
-	return nil
 }
 
-func (sink *diffFileSink) route(chunk *Chunk) (string, string, error) {
+func (sink *diffFileSink) getHandlingStrategy(chunk *Chunk) (diffFileStrategy, error) {
 	// xbstream instructs us to store file at this path:
 	newFilePath := strings.TrimSuffix(chunk.Path, ".meta")
 
 	// we observed this SpaceID at the following path:
 	oldFilePath, err := sink.spaceIDCollector.GetFileForSpaceID(sink.meta.SpaceID)
 	if err != nil && !errors.Is(err, innodb.ErrSpaceIDNotFound) {
-		return "", "", err
+		return diffFileStrategy{}, err
 	}
 	if errors.Is(err, innodb.ErrSpaceIDNotFound) {
 		checkErr := sink.spaceIDCollector.CheckFileForSpaceID(sink.meta.SpaceID, newFilePath)
 		if checkErr != nil && !errors.Is(checkErr, innodb.ErrSpaceIDNotFound) {
 			tracelog.ErrorLogger.Printf("CheckFileForSpaceID: %v %v: %v", sink.meta.SpaceID, newFilePath, checkErr)
-			return "", "", err // return original error
+			return diffFileStrategy{}, err // return original ErrSpaceIDNotFound
 		}
 		if errors.Is(checkErr, innodb.ErrSpaceIDNotFound) {
-			// we thries twice and still haven't found Tablespace in datadir. Highly likely that this a new Tablespace.
+			// we had tried twice and still haven't found Tablespace in datadir. Highly likely that this a new Tablespace.
 			// let xtrabackup to decide what to do with it - send it too incremental dir:
 			tracelog.InfoLogger.Printf("New file for SpaceID %v will be created at %s", sink.meta.SpaceID, newFilePath)
-			return sink.incrementalDir, newFilePath, nil
-		} else {
-			// we have found Tablespace at `newFilePath` path.
-			// send it to dataDir
-			tracelog.DebugLogger.Printf("Our spaceId collector failed to find SpaceID %v, however it is at %v", sink.meta.SpaceID, newFilePath)
-			return sink.dataDir, newFilePath, nil
+			return diffFileStrategy{
+				destinationDir:      sink.incrementalDir,
+				destinationFilePath: newFilePath + ".delta",
+				strategy:            simpleCopyStrategy,
+			}, nil
 		}
-	} else {
-		// We have found Tablespace - use it:
-		if oldFilePath != newFilePath {
-			tracelog.InfoLogger.Printf("File path for SpaceID %v changed from %s to %s", sink.meta.SpaceID, oldFilePath, newFilePath)
-		}
-		return sink.dataDir, oldFilePath, nil
+		// we have found Tablespace at `newFilePath` path.
+		// send it to dataDir
+		tracelog.DebugLogger.Printf("Our spaceId collector failed to find SpaceID %v, however it is at %v", sink.meta.SpaceID, newFilePath)
+		return diffFileStrategy{
+			destinationDir:      sink.dataDir,
+			destinationFilePath: newFilePath,
+			strategy:            applyDiffStrategy,
+		}, nil
+
 	}
+
+	// We have found Tablespace - use it:
+	if oldFilePath != newFilePath {
+		tracelog.InfoLogger.Printf("File path for SpaceID %v changed from %s to %s", sink.meta.SpaceID, oldFilePath, newFilePath)
+	}
+	return diffFileStrategy{
+		destinationDir:      sink.dataDir,
+		destinationFilePath: oldFilePath,
+		strategy:            applyDiffStrategy,
+	}, nil
+
 }
 
 func (sink *diffFileSink) applyDiff() error {
@@ -213,23 +257,27 @@ func (sink *diffFileSink) applyDiff() error {
 			if err != nil {
 				return err
 			}
+			tracelog.DebugLogger.Printf("[DATA]/%v: %v bytes applied", sink.file.Name(), len(firstPage))
+
 			// write to incremental dir:
-			raw := sink.buildFakeDiff(header, firstPage)
-			err = sink.writeToFile(sink.incrementalDir, sink.deltaChunkPath, raw)
+			raw := sink.buildFakeDelta(header, firstPage)
+			err = sink.writeToFile(sink.incrementalDir, sink.strategy.destinationFilePath+".delta", raw)
 			if err != nil {
 				return err
 			}
+			tracelog.DebugLogger.Printf("[INCR]/%v: %v bytes copied", sink.strategy.destinationFilePath+".delta", len(raw))
 		} else {
 			_, err = io.CopyN(sink.file, sink.readHere, int64(sink.meta.PageSize))
 			if err != nil {
 				return err
 			}
+			tracelog.DebugLogger.Printf("[DATA]/%v: %v bytes applied", sink.file.Name(), sink.meta.PageSize)
 		}
 
 		isFirst = false
 	}
 
-	tracelog.DebugLogger.Printf("%v pages copied to file %v", len(pageNums), sink.file.Name())
+	tracelog.DebugLogger.Printf("%v pages applied to file %v", len(pageNums), sink.file.Name())
 
 	return nil
 }
@@ -252,7 +300,7 @@ func (sink *diffFileSink) writeToFile(dir string, relFilePath string, bytes []by
 	return nil
 }
 
-func (sink *diffFileSink) buildFakeDiff(header []byte, page []byte) []byte {
+func (sink *diffFileSink) buildFakeDelta(header []byte, page []byte) []byte {
 	// here we are writing fake diff-file to incrementalDir:
 	// it consists of:
 	// * Header - page_size bytes (page_size - from '.meta' file)

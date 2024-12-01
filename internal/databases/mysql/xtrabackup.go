@@ -183,6 +183,7 @@ func xtrabackupFetchClassic(backup internal.Backup, restoreCmd *exec.Cmd, prepar
 		injectCommandArgument(prepareCmd, XtrabackupIncrementalDir+"="+tempDeltaDir)
 	}
 	if !isLast {
+		prepareCmd = cloneCommand(prepareCmd)
 		injectCommandArgument(prepareCmd, XtrabackupApplyLogOnly)
 	}
 
@@ -258,6 +259,7 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 		injectCommandArgument(prepareCmd, XtrabackupIncrementalDir+"="+tempDeltaDir)
 	}
 	if !isLast {
+		prepareCmd = cloneCommand(prepareCmd)
 		injectCommandArgument(prepareCmd, XtrabackupApplyLogOnly)
 	}
 
@@ -276,7 +278,11 @@ func xtrabackupFetchInhouse(backup internal.Backup, prepareCmd *exec.Cmd, inplac
 		// apply diff-files to dataDir inplace (and leave required leftovers incrementalDir)
 		go xbstream.AsyncDiffBackupSink(&wg, streamReader, dataDir, tempDeltaDir)
 	} else {
-		go xbstream.AsyncBackupSink(&wg, streamReader, dataDir, true)
+		destinationDir := tempDeltaDir
+		if !sentinel.IsIncremental {
+			destinationDir = dataDir
+		}
+		go xbstream.AsyncBackupSink(&wg, streamReader, destinationDir, true)
 	}
 
 	err = fetcher(backup, writer)

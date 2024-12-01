@@ -60,7 +60,8 @@ wal-g st cat "basebackups_005/${LATEST_BACKUP}_backup_stop_sentinel.json"
 # restore all incremental backups
 export WALG_LOG_LEVEL=DEVEL
 mysql_kill_and_clean_data
-wal-g backup-fetch LATEST --use-xbtool-extract --inplace || true
+wal-g backup-fetch LATEST --use-xbtool-extract --inplace
+
 chown -R mysql:mysql $MYSQLDATA
 service mysql start || (cat /var/log/mysql/error.log && false)
 

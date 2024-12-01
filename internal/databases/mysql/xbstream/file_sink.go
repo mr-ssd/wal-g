@@ -63,7 +63,7 @@ func (fsf *fileSinkFactory) NewDataSink(chunkPath string) fileSink {
 
 	filePath := fsf.MapDataSinkPath(chunkPath)
 
-	var decompressor compression.Decompressor = nil
+	var decompressor compression.Decompressor
 	if fsf.decompress {
 		decompressor = compression.FindDecompressor(ext)
 	}
@@ -80,7 +80,6 @@ func (fsf *fileSinkFactory) NewDataSink(chunkPath string) fileSink {
 		tracelog.DebugLogger.Printf("Extracting [DATA]/%v", chunkPath)
 	} else {
 		tracelog.DebugLogger.Printf("Extracting [INCR]/%v", chunkPath)
-
 	}
 
 	if decompressor != nil {

@@ -2,6 +2,7 @@ package innodb
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -42,7 +43,8 @@ func NewPageReader(f *os.File) (*PageReader, error) {
 	// Parse first page:
 	header := readHeader(page)
 	if header.PageType != PageTypeFileSpaceHeader {
-		return nil, fmt.Errorf("0-page in file %v is not FSP_HDR. Actual type: %v", f.Name(), header.PageType)
+		return nil, fmt.Errorf("0-page in file %v is not FSP_HDR. Actual type: %v\n%v",
+			f.Name(), header.PageType, hex.EncodeToString(page))
 	}
 	fsp := readFileSpaceHeader(page)
 
