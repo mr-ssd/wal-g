@@ -1,6 +1,7 @@
 package xbstream
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -14,7 +15,7 @@ func safeFileCreate(dataDir string, relFilePath string) (*os.File, error) {
 	filePath := filepath.Join(dataDir, relFilePath)
 	// FIXME: use os.Root [go 1.24] https://github.com/golang/go/issues/67002
 	if !utility.IsInDirectory(filePath, dataDir) {
-		tracelog.ErrorLogger.Fatalf("xbstream tries to create file outside destination directory: %v", filePath)
+		return nil, fmt.Errorf("xbstream tries to create file outside destination directory: %v", filePath)
 	}
 
 	err := os.MkdirAll(filepath.Dir(filePath), 0777) // FIXME: permissions

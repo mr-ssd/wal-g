@@ -195,7 +195,6 @@ func (sink *diffFileSink) getHandlingStrategy(chunk *Chunk) (diffFileStrategy, e
 			destinationFilePath: newFilePath,
 			strategy:            applyDiffStrategy,
 		}, nil
-
 	}
 
 	// We have found Tablespace - use it:
@@ -207,7 +206,6 @@ func (sink *diffFileSink) getHandlingStrategy(chunk *Chunk) (diffFileStrategy, e
 		destinationFilePath: oldFilePath,
 		strategy:            applyDiffStrategy,
 	}, nil
-
 }
 
 func (sink *diffFileSink) applyDiff() error {
@@ -284,9 +282,7 @@ func (sink *diffFileSink) applyDiff() error {
 
 func (sink *diffFileSink) writeToFile(dir string, relFilePath string, bytes []byte) error {
 	file, err := safeFileCreate(dir, relFilePath)
-	if err != nil {
-		return err
-	}
+	tracelog.ErrorLogger.FatalfOnError("Cannot open new file for write: %v", err)
 
 	_, err = file.Write(bytes)
 	if err != nil {
